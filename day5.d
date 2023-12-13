@@ -5,8 +5,6 @@ import std.range;
 
 alias T = long;
 alias toT = to!T;
-auto locate(Maps data, T seed)
-	=> data.seed(seed).soil.fert.water.light.temp.humid.loc;
 
 void main() {
 	auto seeds = stdin.byLineCopy
@@ -16,7 +14,7 @@ void main() {
 		.array;
 
 	import std.array;
-	auto data = stdin.byLineCopy
+	maps = stdin.byLineCopy
 			.array
 			.splitter("")
 			.filter!(x => x.length)
@@ -25,19 +23,18 @@ void main() {
 			.map!(map!(map!toT))
 			.Maps;
 
-	writeln("stage 1: ", seeds.map!(x => data.locate(x)).minElement);
+	writeln("stage 1: ", seeds.map!locate.minElement);
 }
 
 
+mixin("auto locate(T x) => seed(x)." ~ fields.join(".") ~ ";");
 static immutable fields = ["soil", "fert", "water", "light", "temp", "humid", "loc"];
+struct seed { T val; alias val this; this(T v) { val = v; } }
 static foreach(i, x; ["seed"] ~ fields[0 .. $-1])
-	mixin("struct "~fields[i]~" { "~x~" v; alias v this; this("~x~" s) { maps = s.maps; value = maps._"~fields[i]~".getDest(s.value); } }");
+	mixin("struct "~fields[i]~" { "~x~" v; alias v this; this("~x~" s) { val = maps._"~fields[i]~".getDest(s.val); } }");
 
-struct seed {
-	T value; Maps maps; alias value this;
-	this(ref Maps m, T v) { maps = m; value = v; }
-}
 
+Maps maps;
 struct Maps {
 private:
 	this(R)(R data) if (isInputRange!R) {
