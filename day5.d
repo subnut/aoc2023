@@ -1,118 +1,133 @@
-import std.stdio;
-import std.range;
 import std.algorithm;
+import std.range;
+import std.stdio;
 import std.conv : to;
+import std.typecons : Tuple;
 import std.string : capitalize;
 
 alias T = long;
 alias toT = to!T;
 
-T stage1(T[] seeds)
-	=> seeds.zip(1L.repeat)
-		.map!array
-		.Ranges
-		.locate
-		.map!(x => x.start)
-		.minElement;
-
-T stage2(T[] seeds)	// FIXME: broken.
-	=> seeds.chunks(2)
-		.Ranges
-		.locate
-		.map!(x => x.start)
-		.minElement;
+immutable mapnames = "
+soil fert water light temp humid loc
+".split;
 
 void main() {
 	auto seeds = stdin.byLineCopy
-		.takeOne.front
-		.splitter.dropOne
-		.map!toT
-		.array;
+		.take(2).array
+		.dropBackOne
+		.front.split(":")
+		.dropOne
+		.front.split
+		.map!toT;
 
 	auto data = stdin.byLineCopy
-		.array
-		.splitter("")
+		.array.splitter("")
 		.filter!(x => x.length)
-		.map!(x => x.dropOne)
+		.map!dropOne
 		.map!(map!splitter)
 		.map!(map!(map!toT));
 
-	static foreach(x; fields.map!capitalize)
-		mixin(x~"= data.front.Transformer; data.popFront;");
+	static foreach(name; mapnames.map!capitalize)
+		mixin(name ~ "= data.front.Mapper; data.popFront;");
 
-	"stage 1: ".writeln(seeds.stage1);
-	"stage 2: ".writeln(seeds.stage2);
+	"stage1: ".writeln(seeds.stage1);
+	"stage2: ".writeln(seeds.stage2);
+}
+
+auto stage2(R)(R seeds) if (isInputRange!(R, T)) => seeds.chunks(2).worker;
+auto stage1(R)(R seeds) if (isInputRange!(R, T)) => seeds.zip(1.toT.repeat).worker;
+
+auto worker(R)(R input)
+if (isInputRange!(ElementType!R, T) || isInputRange!(R, Tuple!(T, T)))
+	=> input.map!Range.array.locate.minElement.start;
+
+import std.traits : ReturnType;
+static foreach(x; mapnames) {
+	mixin("Mapper "~x.capitalize~";");
+	mixin("ReturnType!(Mapper.map) "~x~" (X)(X x) => "~x.capitalize~".map(x);");
+}
+mixin("ReturnType!(Mapper.map) locate (X)(X x) => x."~mapnames.join(".")~";");
+
+struct Range {
+	T start, end; // [start, end)
+	T len() const => end > start ? end - start : 0;
+	this(Tuple!(T, T) t) { t[1] += t[0]; this(t.expand); }
+	this(T a, T b) { start = a; end = b; }
+	this(R)(R r) if (isInputRange!(R, T)) {
+		start = r.front;
+		end = r.sum;
+	}
+	T opCmp(typeof(this) b) const => this.start - b.start;
+	typeof(this) opBinary(string _ : "+")(T offset) {
+		return typeof(this)(start + offset, end + offset);
+	}
+}
+
+struct Intersection {
+	Range data;
+	alias data this;
+	bool opCast() const => this.len != 0;
+	this(Range a, Range b) {
+		start = max(a.start, b.start);
+		end = min(a.end, b.end);
+	}
 }
 
 struct Map {
 	T sstart, dstart, len;
-	this(R)(R x) if (isInputRange!R) {
-		dstart	= x.front; x.popFront;
-		sstart	= x.front; x.popFront;
-		len	= x.front; x.popFront;
+	this(R)(R input) if (isInputRange!(R, T)) {
+		// maps are like this: dest src len
+		static foreach(var; ["dstart", "sstart", "len"])
+			mixin(var ~ "= input.front; input.popFront;");
 	}
-	Range range() => Range(sstart, len);
-	T transform() => dstart - sstart;
+	T opCmp(typeof(this) a) const => this.sstart - a.sstart;
+	Range domain() => Range(sstart, sstart + len);
+	T offset() => dstart - sstart;
 }
-struct Transformer {
+
+struct Mapper {
 	Map[] maps;
-	this(R)(R x) if (isInputRange!R) {
-		foreach(r; x.map!Map)
-			maps ~= r;
+	this(R)(R r) if (isInputRange!R && isInputRange!(ElementType!R, T)) {
+		maps = r.map!Map.array.sort.array;
 	}
-	Ranges transform(Ranges ranges) {
-		Ranges output;
-		foreach (range; ranges) {
-			bool intercepted = false;
-			foreach (map; maps) {
-				if (auto intercept = Intersection(range, map.range)) {
-					output ~= Range(intercept.start + map.transform, intercept.len);
-					intercepted = true;
-					if (intercept.len < range.len) {
-						if (range.start < intercept.start)
-							output ~= Range(range.start, intercept.start - range.start);
-						if (intercept.end < range.end)
-							output ~= Range(intercept.end, range.end - intercept.end);
-					}
-					break;
-				}
+	import std.traits : isInstanceOf;
+	Range[] map(Range[] input) => this.map(input.sort);
+	Range[] map(R)(R input) if (isForwardRange!(R, Range)
+			&& isInstanceOf!(SortedRange, R)) {
+		Range[] output;
+		auto maps = this.maps.save;
+		auto ref map() => maps.front;
+		auto ref current() => input.front;
+		while (!input.empty) {
+			while (!maps.empty && map.domain.end <= current.start)
+				maps.popFront;
+			if (maps.empty) {
+				output ~= current;
+				input.popFront;
+				continue;
 			}
-			if (!intercepted)
-				output ~= range;
+			while (!input.empty && current.end <= map.domain.start) {
+				output ~= current;
+				input.popFront;
+			} if (input.empty) continue;
+			auto intersect = map.domain.Intersection(current);
+			if (!intersect) continue;
+			if (current.start < intersect.start) {
+				output ~= Range(current.start, intersect.start);
+				current.start = intersect.start;
+			}
+			output ~= intersect + map.offset;
+			if (current.end > intersect.end) {
+				current.start = intersect.end;
+				continue;
+			}
+			input.popFront;
 		}
 		return output;
 	}
 }
-struct Range {
-	T start, len;
-	T end() => start + len;	// non-inclusive
-	this(T s, T n) { start = s; len = n; }
-	this(R)(R x) if (isInputRange!R) {
-		start	= x.front; x.popFront;
-		len	= x.front; x.popFront;
-	}
-}
-struct Intersection {
-	Range r;
-	alias r this;
-	bool opCast() const => this.len != 0;
-	this(Range a, Range b) {
-		start = max(a.start, b.start);
-		len = min(a.end, b.end) - start;
-		len = len < 0 ? 0 : len;
-	}
-}
-struct Ranges {
-	Range[] data;
-	alias data this;
-	this(R)(R x) if (isInputRange!R) {
-		foreach (k; x)
-			data ~= Range(k.front, k.dropOne.front);
-	}
-}
 
-
-static immutable fields = ["soil", "fert", "water", "light", "temp", "humid", "loc"];
-static foreach(x; fields.map!capitalize) mixin("Transformer "~x~";");
-static foreach(x; fields) mixin("auto "~x~"(Ranges x) => "~x.capitalize~".transform(x);");
-mixin("auto locate(Ranges seeds) => seeds."~fields.join(".")~";");
+import std.range.primitives : isForwardRange;
+enum bool isForwardRange(R, T) = isInputRange!(R, T)
+	&& std.range.primitives.isForwardRange!R;
